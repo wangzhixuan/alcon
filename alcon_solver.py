@@ -177,6 +177,115 @@ class Solver:
 
     def _solve_radrange(self, iradrange, conn = None):
         '''Solves for given rage of radial grid irad'''
+
+        def identify_component(local_omegas, local_eigenvecs):
+            """
+            try to find the best correspondence between eigenvecs and the m-harmonic
+            by enforcing one m-harmonic is associated with one eigenvector
+
+            :param local_omegas:  1d np.array with length: self.input_..ncon
+
+            :param local_eigenvecs: np.array with length: self.nmpol * self.input_.ncon
+
+            :return: a list with the length self.nmpol,
+                        if the element is None: no eigenvec is found associated with that m-harmonic
+                        if the element is an integer: eigenvec[:, element] and omegas[element]
+            """
+
+            local_eigenvecs_argsort = np.zeros(local_eigenvecs.shape)
+            local_omegas_grped_idx = [[] for i in range(self.nmpol)]
+            unsettled_idx = []
+
+            for ieig, omega in enumerate(local_omegas):
+                local_eigenvecs_argsort[:, ieig] = (-np.abs(local_eigenvecs[:, ieig])).argsort()
+                ieigvecabsmax = int(local_eigenvecs_argsort[0, ieig])
+                # print "----------------"
+                # print ieigvecabsmax
+                # print len(local_omegas_grped_idx)
+                # print len(local_omegas_grped_idx[ieigvecabsmax])
+                # print "---------------"
+                local_omegas_grped_idx[ieigvecabsmax].append(ieig)
+                #local_omegas_grouped[ieigvecabsmax].append((self.eqdata.profiles[0, irad], omega))
+
+            local_eigenvecs_argsort = local_eigenvecs_argsort.astype(int)
+
+            #if irad==100:
+            #    print '##########################'
+            #    for i, group in enumerate(local_omegas_grped_idx):
+            #        print i+self.input_.mpolrange[0], group
+
+            for harmonic in range(self.nmpol):
+                # try to indentify the best eigenvector
+                # if there are more than 1 associated with that component
+                if len(local_omegas_grped_idx[harmonic])>1:
+                    best_match = local_omegas_grped_idx[harmonic][0]
+                    best_score = np.abs(local_eigenvecs[harmonic, best_match])
+
+                    # find the best one
+                    for index in local_omegas_grped_idx[harmonic]:
+                        score = np.abs(local_eigenvecs[harmonic, index])
+                        if score>best_score:
+                            best_score = score
+                            best_match = index
+
+                    # put index of the rest into unsettled_idx
+                    for index in list(local_omegas_grped_idx[harmonic]):
+                        if index is not best_match:
+                            local_omegas_grped_idx[harmonic].remove(index)
+                            unsettled_idx.append(index)
+
+
+            while len(unsettled_idx)>0:
+
+                #if irad==100:
+                #    print '##########################'
+                #    for i, group in enumerate(local_omegas_grped_idx):
+                #        print i+self.input_.mpolrange[0], group
+
+
+                # find the new harmonic for the unsettled eigenvectors
+                index = unsettled_idx[0]
+
+                #print "#####################"
+                #print index, len(unsettled_idx), len(local_eigenvecs_argsort[index])
+
+                # try to match the eigenvector with another m-harmonic
+                # It is safe to skip the first choice (using [1:] rather than [:]),
+                # since they are already been kicked out by their first choices.
+                for harmonic in local_eigenvecs_argsort[:, index]:
+
+                    #print "----------------------"
+                    # if there is no previously assigned eigenvector
+                    if len(local_omegas_grped_idx[harmonic])==0:
+                        local_omegas_grped_idx[harmonic].append(index)
+                        unsettled_idx.remove(index)
+                        #print "a", index, harmonic
+                        #print "b", unsettled_idx
+                        break
+
+                    # if there is a previously assigned eigenvector, compare the score
+                    score = np.abs(local_eigenvecs[harmonic, index])
+                    org_index = local_omegas_grped_idx[harmonic][0]
+                    org_score = np.abs(local_eigenvecs[harmonic, org_index])
+                    #print ccc, harmonic, index, org_index, score, org_score, np.linalg.norm(local_eigenvecs[:, org_index])
+                    if score> org_score:
+                        local_omegas_grped_idx[harmonic].append(index)
+                        local_omegas_grped_idx[harmonic].remove(org_index)
+                        unsettled_idx.append(org_index)
+                        unsettled_idx.remove(index)
+                        #print "a", index, harmonic, org_idx
+                        #print "b",  unsettled_idx
+                        break
+
+            result = [None] * self.nmpol
+            for harmonic, omega_group in enumerate(local_omegas_grped_idx):
+                if len(omega_group)>1:
+                    raise "There must be an error in this function"
+                elif len(omega_group)>0:
+                    result[harmonic] = omega_group[0]
+
+            return result
+
         for irad in range(*iradrange):
             # Print out progress on root process
             # (radial index range starts from 0 for root process)
@@ -213,6 +322,9 @@ class Solver:
                 write(('[_solve_radrange][{:d}] '
                     'Info: eigenvectors: {!s}\n').format(irad, eigvecs))
 
+            local_omegas = []
+            local_eigenvecs = []
+
             # Loop over eigen-solutions and store useful ones
             for ieig in range(len(eigvals)):
                 omega = np.sqrt(eigvals[ieig] / self.eqdata.profiles[4, irad])
@@ -228,11 +340,36 @@ class Solver:
                 if (self.input_.omegacutoff > 0
                     and self.input_.omegacutoff < omega_scaled):
                     continue
+                #ieigvecabsmax = np.argmax(np.abs(eigvecs[:, ieig]))
+                #self.omegas[ieigvecabsmax].append(
+                #   (self.eqdata.profiles[0, irad], omega_scaled))
 
-                ieigvecabsmax = np.argmax(np.abs(eigvecs[:, ieig]))
-                self.omegas[ieigvecabsmax].append(
-                    (self.eqdata.profiles[0, irad], omega_scaled))
+
+                local_omegas.append(omega_scaled)
+                local_eigenvecs.append(eigvecs[:, ieig]/omega_scaled**2)#np.linalg.norm(eigvecs[:, ieig]))
+
             # End of for ieig in range(len(eigvals)):
+
+            local_omegas = np.array(local_omegas)
+            local_eigenvecs = np.array(local_eigenvecs).T
+            local_omegas_assigned = identify_component(local_omegas, local_eigenvecs)
+
+            # if irad==100:
+            #     print '----------------------------'
+            #     for i in range(self.input_.ncon):
+            #         print local_omegas[i]
+            #         print np.abs(local_eigenvecs[:,i])/np.linalg.norm(local_eigenvecs[:,i])
+            #
+            #     print '---------------------------'
+            #     for j in range(self.nmpol):
+            #         print self.input_.mpolrange[0]+j, local_omegas_assigned[j]
+            #     print '---------------------------'
+
+            rho = self.eqdata.profiles[0, irad]
+            for harmonic in range(self.nmpol):
+                if local_omegas_assigned[harmonic] is not None:
+                    self.omegas[harmonic].append((rho, local_omegas[local_omegas_assigned[harmonic]]))
+
             if self.input_.v >= 2:
                 write('[_solve_radrange][{:d}] Info: omegas: {!s}\n'.format(
                     irad, self.omegas))
